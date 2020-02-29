@@ -130,6 +130,8 @@ export class VerificationBase extends EventEmitter {
 
     switchStartEvent(event) {
         if (this.canSwitchStartEvent(event)) {
+            logger.log("Verification Base: switching verification start event",
+                {restartingFlow: !!this._rejectEvent});
             if (this._rejectEvent) {
                 const reject = this._rejectEvent;
                 this._rejectEvent = undefined;
@@ -184,10 +186,7 @@ export class VerificationBase extends EventEmitter {
     done() {
         this._endTimer(); // always kill the activity timer
         if (!this._done) {
-            if (this._channel.needsDoneMessage) {
-                // verification in DM requires a done message
-                this._send("m.key.verification.done", {});
-            }
+            this.request.onVerifierFinished();
             this._resolve();
         }
     }

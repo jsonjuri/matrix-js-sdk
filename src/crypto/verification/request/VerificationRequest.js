@@ -73,6 +73,7 @@ export class VerificationRequest extends EventEmitter {
         this._sharedSecret = null; // used for QR codes
         this._accepting = false;
         this._declining = false;
+        this._verifierHasFinished = false;
     }
 
     /**
@@ -412,7 +413,7 @@ export class VerificationRequest extends EventEmitter {
     _generateSharedSecret() {
         const secretBytes = new Uint8Array(8);
         global.crypto.getRandomValues(secretBytes);
-        this._sharedSecret = olmlib.encodeBase64(secretBytes);
+        this._sharedSecret = olmlib.encodeUnpaddedBase64(secretBytes);
     }
 
     /**
@@ -505,7 +506,7 @@ export class VerificationRequest extends EventEmitter {
         }
 
         const ourDoneEvent = this._eventsByUs.get(DONE_TYPE);
-        if (ourDoneEvent && phase() === PHASE_STARTED) {
+        if (this._verifierHasFinished || (ourDoneEvent && phase() === PHASE_STARTED)) {
             transitions.push({phase: PHASE_DONE});
         }
 
@@ -553,6 +554,18 @@ export class VerificationRequest extends EventEmitter {
         }
     }
 
+    _applyPhaseTransitions() {
+        const transitions = this._calculatePhaseTransitions();
+        const existingIdx = transitions.findIndex(t => t.phase === this.phase);
+        // trim off phases we already went through, if any
+        const newTransitions = transitions.slice(existingIdx + 1);
+        // transition to all new phases
+        for (const transition of newTransitions) {
+            this._transitionToPhase(transition);
+        }
+        return newTransitions;
+    }
+
     /**
      * Changes the state of the request and verifier in response to a key verification event.
      * @param {string} type the "symbolic" event type, as returned by the `getEventType` function on the channel.
@@ -581,14 +594,8 @@ export class VerificationRequest extends EventEmitter {
         const oldPhase = this.phase;
         this._addEvent(type, event, isSentByUs);
 
-        const transitions = this._calculatePhaseTransitions();
-        const existingIdx = transitions.findIndex(t => t.phase === this.phase);
-        // trim off phases we already went through, if any
-        const newTransitions = transitions.slice(existingIdx + 1);
-        // transition to all new phases
-        for (const transition of newTransitions) {
-            this._transitionToPhase(transition);
-        }
+        // this will create if needed the verifier so needs to happen before calling it
+        const newTransitions = this._applyPhaseTransitions();
         try {
             // only pass events from the other side to the verifier,
             // no remote echos of our own events
@@ -622,9 +629,11 @@ export class VerificationRequest extends EventEmitter {
         } finally {
             // log events we processed so we can see from rageshakes what events were added to a request
             logger.log(`Verification request ${this.channel.transactionId}: ` +
-                `${type} event with ${JSON.stringify(event.getContent())} ` +
-                `deviceId:${this.channel.deviceId} ` +
-                `sender:${event.getSender()}, isSentByUs:${isSentByUs} ` +
+                `${type} event with id:${event.getId()}, ` +
+                `content:${JSON.stringify(event.getContent())} ` +
+                `deviceId:${this.channel.deviceId}, ` +
+                `sender:${event.getSender()}, isSentByUs:${isSentByUs}, ` +
+                `isLiveEvent:${isLiveEvent}, isRemoteEcho:${isRemoteEcho}, ` +
                 `phase:${oldPhase}=>${this.phase}, ` +
                 `observeOnly:${wasObserveOnly}=>${this._observeOnly}`);
         }
@@ -668,7 +677,12 @@ export class VerificationRequest extends EventEmitter {
 
         const isUnexpectedRequest = type === REQUEST_TYPE && this.phase !== PHASE_UNSENT;
         const isUnexpectedReady = type === READY_TYPE && this.phase !== PHASE_REQUESTED;
-        if (isUnexpectedRequest || isUnexpectedReady) {
+        // only if phase has passed from PHASE_UNSENT should we cancel, because events
+        // are allowed to come in in any order (at least with InRoomChannel). So we only know
+        // we're dealing with a valid request we should participate in once we've moved to PHASE_REQUESTED
+        // before that, we could be looking at somebody elses verification request and we just
+        // happen to be in the room
+        if (this.phase !== PHASE_UNSENT && (isUnexpectedRequest || isUnexpectedReady)) {
             logger.warn(`Cancelling, unexpected ${type} verification ` +
                 `event from ${event.getSender()}`);
             const reason = `Unexpected ${type} event in phase ${this.phase}`;
@@ -749,5 +763,17 @@ export class VerificationRequest extends EventEmitter {
             return false;
         }
         return true;
+    }
+
+    onVerifierFinished() {
+        if (this.channel.needsDoneMessage) {
+            // verification in DM requires a done message
+            this.channel.send("m.key.verification.done", {});
+        }
+        this._verifierHasFinished = true;
+        const newTransitions = this._applyPhaseTransitions();
+        if (newTransitions.length) {
+            this._setPhase(newTransitions[newTransitions.length - 1].phase);
+        }
     }
 }
