@@ -1899,7 +1899,7 @@ function calculateRoomName(room, userId, ignoreRoomNameEvent) {
         }).map((m) => m.name);
     }
     if(leftNames.length) {
-        return `Empty room (was ${memberNamesToRoomName(leftNames)})`;
+        return memberNamesToRoomName(leftNames);
     } else {
         return "Empty room";
     }
