@@ -251,7 +251,10 @@ export function MatrixClient(opts) {
     this.deviceId = opts.deviceId || null;
 
     const userId = (opts.userId || null);
+    const accessToken = (opts.accessToken || null);
+
     this.credentials = {
+        accessToken: accessToken,
         userId: userId,
     };
 
@@ -2667,6 +2670,7 @@ MatrixClient.prototype.sendImageMessage = function(roomId, url, info, text, call
          info: info,
          body: text,
     };
+
     return this.sendMessage(roomId, content, callback);
 };
 
