@@ -165,6 +165,18 @@ utils.inherits(MatrixEvent, EventEmitter);
 
 
 utils.extend(MatrixEvent.prototype, {
+    /**
+     * Get the (decrypted, if necessary) event content JSON,
+     * or the content from the replacing event, if any.
+     * See `makeReplaced`.
+     *
+     * @return {Object} The event content JSON, or an empty object.
+     */
+    isGif: function() {
+        const content = this.getContent();
+        const hostname = content && content.body && content.url ? (new URL(content.url)).hostname : '';
+        return hostname === 'tenor.com' || hostname === 'media.tenor.com';
+    },
 
     /**
      * Get the event_id for this event.
