@@ -972,9 +972,23 @@ Crypto.prototype.checkOwnCrossSigningTrust = async function() {
     }
 
     if (masterChanged) {
-        await this._signObject(this._crossSigningInfo.keys.master);
-        keySignatures[this._crossSigningInfo.getId()]
-            = this._crossSigningInfo.keys.master;
+        const masterKey = this._crossSigningInfo.keys.master;
+        await this._signObject(masterKey);
+        const deviceSig = masterKey.signatures[this._userId]["ed25519:" + this._deviceId];
+        // Include only the _new_ device signature in the upload.
+        // We may have existing signatures from deleted devices, which will cause
+        // the entire upload to fail.
+        keySignatures[this._crossSigningInfo.getId()] = Object.assign(
+            {},
+            masterKey,
+            {
+                signatures: {
+                    [this._userId]: {
+                        ["ed25519:" + this._deviceId]: deviceSig,
+                    },
+                },
+            },
+        );
     }
 
     const keysToUpload = Object.keys(keySignatures);
@@ -2346,6 +2360,20 @@ Crypto.prototype.flagAllGroupSessionsForBackup = async function() {
     const remaining = await this._cryptoStore.countSessionsNeedingBackup();
     this.emit("crypto.keyBackupSessionsRemaining", remaining);
     return remaining;
+};
+
+/**
+ * Perform any background tasks that can be done before a message is ready to
+ * send, in order to speed up sending of the message.
+ *
+ * @param {module:models/room} room the room the event is in
+ */
+Crypto.prototype.prepareToEncrypt = function(room) {
+    const roomId = room.roomId;
+    const alg = this._roomEncryptors[roomId];
+    if (alg) {
+        alg.prepareToEncrypt(room);
+    }
 };
 
 /* eslint-disable valid-jsdoc */    //https://github.com/eslint/eslint/issues/7307

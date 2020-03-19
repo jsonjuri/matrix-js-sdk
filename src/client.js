@@ -1136,6 +1136,12 @@ function wrapCryptoFuncs(MatrixClient, names) {
  * @returns {boolean} true if the key matches, otherwise false
  */
 
+/**
+ * Perform any background tasks that can be done before a message is ready to
+ * send, in order to speed up sending of the message.
+ *
+ * @param {module:models/room} room the room the event is in
+ */
 wrapCryptoFuncs(MatrixClient, [
     "resetCrossSigningKeys",
     "getCrossSigningId",
@@ -1145,6 +1151,7 @@ wrapCryptoFuncs(MatrixClient, [
     "checkOwnCrossSigningTrust",
     "checkCrossSigningPrivateKey",
     "legacyDeviceVerification",
+    "prepareToEncrypt",
 ]);
 
 /**
