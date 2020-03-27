@@ -763,7 +763,6 @@ MatrixClient.prototype.isCryptoEnabled = function() {
     return this._crypto !== null;
 };
 
-
 /**
  * Get the Ed25519 key for this device
  *
@@ -1155,6 +1154,8 @@ wrapCryptoFuncs(MatrixClient, [
     "legacyDeviceVerification",
     "prepareToEncrypt",
     "isCrossSigningReady",
+    "getCryptoTrustCrossSignedDevices",
+    "setCryptoTrustCrossSignedDevices",
 ]);
 
 /**
@@ -5206,9 +5207,6 @@ function setupCallEventHandler(client) {
 function checkTurnServers(client) {
     if (!client._supportsVoip) {
         return;
-    }
-    if (client.isGuest()) {
-        return; // guests can't access TURN servers
     }
 
     client.turnServer().then(function(res) {
