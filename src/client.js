@@ -1182,7 +1182,9 @@ MatrixClient.prototype.checkEventSenderTrust = async function(event) {
  * @param {string} password Passphrase string that can be entered by the user
  *     when restoring the backup as an alternative to entering the recovery key.
  *     Optional.
- * @returns {Promise<String>} The user-facing recovery key string.
+ * @returns {Promise<Object>} Object with public key metadata, encoded private
+ *     recovery key which should be disposed of after displaying to the user,
+ *     and raw private key to avoid round tripping if needed.
  */
 
 /**
@@ -1311,6 +1313,7 @@ wrapCryptoFuncs(MatrixClient, [
     "requestSecret",
     "getDefaultSecretStorageKeyId",
     "setDefaultSecretStorageKeyId",
+    "checkSecretStorageKey",
     "checkSecretStoragePrivateKey",
 ]);
 
@@ -1566,7 +1569,7 @@ MatrixClient.prototype.prepareKeyBackupVersion = async function(
         throw new Error("End-to-end encryption disabled");
     }
 
-    const [keyInfo, encodedPrivateKey, privateKey] =
+    const { keyInfo, encodedPrivateKey, privateKey } =
         await this.createRecoveryKeyFromPassphrase(password);
 
     if (secureSecretStorage) {
