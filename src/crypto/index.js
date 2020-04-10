@@ -690,6 +690,14 @@ Crypto.prototype.bootstrapSecretStorage = async function({
             }
         }
 
+        if (setupNewKeyBackup && !keyBackupInfo) {
+            const info = await this._baseApis.prepareKeyBackupVersion(
+                null /* random key */,
+                { secureSecretStorage: true },
+            );
+            await this._baseApis.createKeyBackupVersion(info);
+        }
+
         // Call `getCrossSigningKey` for side effect of caching private keys for
         // future gossiping to other devices if enabled via app level callbacks.
         if (this._crossSigningInfo._cacheCallbacks) {
@@ -703,15 +711,8 @@ Crypto.prototype.bootstrapSecretStorage = async function({
         const sessionBackupKey = await this.getSecret('m.megolm_backup.v1');
         if (sessionBackupKey) {
             logger.info("Got session backup key from secret storage: caching");
-            await this.storeSessionBackupPrivateKey(sessionBackupKey);
-        }
-
-        if (setupNewKeyBackup && !keyBackupInfo) {
-            const info = await this._baseApis.prepareKeyBackupVersion(
-                null /* random key */,
-                { secureSecretStorage: true },
-            );
-            await this._baseApis.createKeyBackupVersion(info);
+            const decoded = olmlib.decodeBase64(sessionBackupKey);
+            await this.storeSessionBackupPrivateKey(decoded);
         }
     } finally {
         // Restore the original callbacks. NB. we must do this by manipulating
@@ -822,6 +823,9 @@ Crypto.prototype.getSessionBackupPrivateKey = async function() {
  * @returns {Promise} so you can catch failures
  */
 Crypto.prototype.storeSessionBackupPrivateKey = async function(key) {
+    if (!(key instanceof Uint8Array)) {
+        throw new Error(`storeSessionBackupPrivateKey expects Uint8Array, got ${key}`);
+    }
     return this._cryptoStore.doTxn(
         'readwrite',
         [IndexedDBCryptoStore.STORE_ACCOUNT],
@@ -1141,13 +1145,18 @@ Crypto.prototype._onDeviceListUserCrossSigningUpdated = async function(userId) {
             // If it's not changed, just make sure everything is up to date
             await this.checkOwnCrossSigningTrust();
         } else {
-            this.emit("crossSigning.keysChanged", {});
             // We'll now be in a state where cross-signing on the account is not trusted
             // because our locally stored cross-signing keys will not match the ones
-            // on the server for our account. The app must call checkOwnCrossSigningTrust()
-            // to fix this.
-            // XXX: Do we need to do something to emit events saying every device has become
-            // untrusted?
+            // on the server for our account. So we clear our own stored cross-signing keys,
+            // effectively disabling cross-signing until the user gets verified by the device
+            // that reset the keys
+            this._storeTrustedSelfKeys(null);
+            // emit cross-signing has been disabled
+            this.emit("crossSigning.keysChanged", {});
+            // as the trust for our own user has changed,
+            // also emit an event for this
+            this.emit("userTrustStatusChanged",
+                this._userId, this.checkUserTrust(userId));
         }
     } else {
         await this._checkDeviceVerifications(userId);
@@ -1303,7 +1312,11 @@ Crypto.prototype.checkOwnCrossSigningTrust = async function() {
  * @param {object} keys The new trusted set of keys
  */
 Crypto.prototype._storeTrustedSelfKeys = async function(keys) {
-    this._crossSigningInfo.setKeys(keys);
+    if (keys) {
+        this._crossSigningInfo.setKeys(keys);
+    } else {
+        this._crossSigningInfo.clearKeys();
+    }
     await this._cryptoStore.doTxn(
         'readwrite', [IndexedDBCryptoStore.STORE_ACCOUNT],
         (txn) => {
@@ -2781,6 +2794,14 @@ Crypto.prototype.cancelRoomKeyRequest = function(requestBody) {
     .catch((e) => {
         logger.warn("Error clearing pending room key requests", e);
     });
+};
+
+/**
+ * Re-send any outgoing key requests, eg after verification
+ * @returns {Promise}
+ */
+Crypto.prototype.cancelAndResendAllOutgoingKeyRequests = function() {
+    return this._outgoingRoomKeyRequestManager.cancelAndResendAllOutgoingRequests();
 };
 
 /**
