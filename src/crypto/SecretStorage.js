@@ -81,27 +81,25 @@ export class SecretStorage extends EventEmitter {
      * @param {string} [keyId] the ID of the key.  If not given, a random
      *     ID will be generated.
      *
-     * @return {object} An object with:
-     *     keyId: {string} the ID of the key
-     *     keyInfo: {object} details about the key (iv, mac, passphrase)
+     * @return {string} the ID of the key
      */
     async addKey(algorithm, opts, keyId) {
-        const keyInfo = {algorithm};
+        const keyData = {algorithm};
 
         if (!opts) opts = {};
 
         if (opts.name) {
-            keyInfo.name = opts.name;
+            keyData.name = opts.name;
         }
 
         if (algorithm === SECRET_STORAGE_ALGORITHM_V1_AES) {
             if (opts.passphrase) {
-                keyInfo.passphrase = opts.passphrase;
+                keyData.passphrase = opts.passphrase;
             }
             if (opts.key) {
                 const {iv, mac} = await SecretStorage._calculateKeyCheck(opts.key);
-                keyInfo.iv = iv;
-                keyInfo.mac = mac;
+                keyData.iv = iv;
+                keyData.mac = mac;
             }
         } else {
             throw new Error(`Unknown key algorithm ${opts.algorithm}`);
@@ -118,13 +116,10 @@ export class SecretStorage extends EventEmitter {
         }
 
         await this._baseApis.setAccountData(
-            `m.secret_storage.key.${keyId}`, keyInfo,
+            `m.secret_storage.key.${keyId}`, keyData,
         );
 
-        return {
-            keyId,
-            keyInfo,
-        };
+        return keyId;
     }
 
     /**
@@ -462,13 +457,13 @@ export class SecretStorage extends EventEmitter {
             if (!this._cryptoCallbacks.onSecretRequested) {
                 return;
             }
-            const secret = await this._cryptoCallbacks.onSecretRequested(
-                sender,
-                deviceId,
-                content.request_id,
-                content.name,
-                this._baseApis.checkDeviceTrust(sender, deviceId),
-            );
+            const secret = await this._cryptoCallbacks.onSecretRequested({
+                user_id: sender,
+                device_id: deviceId,
+                request_id: content.request_id,
+                name: content.name,
+                device_trust: this._baseApis.checkDeviceTrust(sender, deviceId),
+            });
             if (secret) {
                 logger.info(`Preparing ${content.name} secret for ${deviceId}`);
                 const payload = {

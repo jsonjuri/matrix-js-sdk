@@ -1921,7 +1921,6 @@ function calculateRoomName(room, userId, ignoreRoomNameEvent) {
                 m.membership !== "join";
         }).map((m) => m.name);
     }
-
     if (leftNames.length) {
         return `Empty room (was ${memberNamesToRoomName(leftNames)})`;
     } else {

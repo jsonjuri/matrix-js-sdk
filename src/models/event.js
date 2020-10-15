@@ -169,32 +169,11 @@ export const MatrixEvent = function(
        allows for a unique ID which does not change when the event comes back down sync.
      */
     this._txnId = null;
-
-    /* Set an approximate timestamp for the event relative the local clock.
-     * This will inherently be approximate because it doesn't take into account
-     * the time between the server putting the 'age' field on the event as it sent
-     * it to us and the time we're now constructing this event, but that's better
-     * than assuming the local clock is in sync with the origin HS's clock.
-     */
-    this._localTimestamp = Date.now() - this.getAge();
 };
 utils.inherits(MatrixEvent, EventEmitter);
 
 
 utils.extend(MatrixEvent.prototype, {
-    /**
-     * Get the (decrypted, if necessary) event content JSON,
-     * or the content from the replacing event, if any.
-     * See `makeReplaced`.
-     *
-     * @return {Object} The event content JSON, or an empty object.
-     */
-    isGif: function() {
-        const content = this.getContent();
-        const hostname = content && content.body && content.url ? (new URL(content.url)).hostname : '';
-        return hostname === 'tenor.com' || hostname === 'media.tenor.com';
-    },
-
     /**
      * Get the event_id for this event.
      * @return {string} The event ID, e.g. <code>$143350589368169JsLZx:localhost
@@ -332,12 +311,11 @@ utils.extend(MatrixEvent.prototype, {
 
     /**
      * Get the age of the event when this function was called.
-     * This is the 'age' field adjusted according to how long this client has
-     * had the event.
+     * Relies on the local clock being in sync with the clock of the original homeserver.
      * @return {Number} The age of this event in milliseconds.
      */
     getLocalAge: function() {
-        return Date.now() - this._localTimestamp;
+        return Date.now() - this.getTs();
     },
 
     /**

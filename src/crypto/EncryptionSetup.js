@@ -344,14 +344,14 @@ class SSSSCryptoCallbacks {
         }
     }
 
-    addPrivateKey(keyId, keyInfo, privKey) {
+    addPrivateKey(keyId, privKey) {
         this._privateKeys.set(keyId, privKey);
         // Also pass along to application to cache if it wishes
         if (
             this._delegateCryptoCallbacks &&
             this._delegateCryptoCallbacks.cacheSecretStorageKey
         ) {
-            this._delegateCryptoCallbacks.cacheSecretStorageKey(keyId, keyInfo, privKey);
+            this._delegateCryptoCallbacks.cacheSecretStorageKey(keyId, privKey);
         }
     }
 }
