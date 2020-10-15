@@ -27,6 +27,7 @@ import {MockStorageApi} from "../../MockStorageApi";
 import * as testUtils from "../../test-utils";
 import {OlmDevice} from "../../../src/crypto/OlmDevice";
 import {Crypto} from "../../../src/crypto";
+import {resetCrossSigningKeys} from "./crypto-utils";
 
 const Olm = global.Olm;
 
@@ -332,7 +333,7 @@ describe("MegolmBackup", function() {
             client.on("crossSigning.getKey", function(e) {
                 e.done(privateKeys[e.type]);
             });
-            await client.resetCrossSigningKeys();
+            await resetCrossSigningKeys(client);
             let numCalls = 0;
             await new Promise((resolve, reject) => {
                 client._http.authedRequest = function(
@@ -517,6 +518,7 @@ describe("MegolmBackup", function() {
                 return megolmDecryption.decryptEvent(ENCRYPTED_EVENT);
             }).then((res) => {
                 expect(res.clearEvent.content).toEqual('testytest');
+                expect(res.untrusted).toBeTruthy(); // keys from backup are untrusted
             });
         });
 
@@ -546,7 +548,7 @@ describe("MegolmBackup", function() {
             const key = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]);
             await client._crypto.storeSessionBackupPrivateKey(key);
             const result = await client._crypto.getSessionBackupPrivateKey();
-            expect(result).toEqual(key);
+            expect(new Uint8Array(result)).toEqual(key);
         });
 
         it('caches session backup keys as it encounters them', async function() {

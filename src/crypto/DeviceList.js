@@ -109,6 +109,9 @@ export class DeviceList extends EventEmitter {
         this._savePromiseTime = null;
         // The timer used to delay the save
         this._saveTimer = null;
+        // True if we have fetched data from the server or loaded a non-empty
+        // set of device data from the store
+        this._hasFetched = null;
     }
 
     /**
@@ -118,6 +121,7 @@ export class DeviceList extends EventEmitter {
         await this._cryptoStore.doTxn(
             'readonly', [IndexedDBCryptoStore.STORE_DEVICE_DATA], (txn) => {
                 this._cryptoStore.getEndToEndDeviceData(txn, (deviceData) => {
+                    this._hasFetched = Boolean(deviceData && deviceData.devices);
                     this._devices = deviceData ? deviceData.devices : {},
                     this._crossSigningInfo = deviceData ?
                         deviceData.crossSigningInfo || {} : {};
@@ -652,6 +656,7 @@ export class DeviceList extends EventEmitter {
         });
 
         const finished = (success) => {
+            this.emit("crypto.willUpdateDevices", users, !this._hasFetched);
             users.forEach((u) => {
                 this._dirty = true;
 
@@ -677,7 +682,8 @@ export class DeviceList extends EventEmitter {
                 }
             });
             this.saveIfDirty();
-            this.emit("crypto.devicesUpdated", users);
+            this.emit("crypto.devicesUpdated", users, !this._hasFetched);
+            this._hasFetched = true;
         };
 
         return prom;
@@ -784,7 +790,7 @@ class DeviceListUpdateSerialiser {
 
             // yield to other things that want to execute in between users, to
             // avoid wedging the CPU
-            // (https://github.com/vector-im/riot-web/issues/3158)
+            // (https://github.com/vector-im/element-web/issues/3158)
             //
             // of course we ought to do this in a web worker or similar, but
             // this serves as an easy solution for now.
@@ -842,6 +848,7 @@ class DeviceListUpdateSerialiser {
 
             await _updateStoredDeviceKeysForUser(
                 this._olmDevice, userId, userStore, dkResponse || {},
+                this._baseApis.getUserId(), this._baseApis.deviceId,
             );
 
             // put the updates into the object that will be returned as our results
@@ -879,8 +886,9 @@ class DeviceListUpdateSerialiser {
 }
 
 
-async function _updateStoredDeviceKeysForUser(_olmDevice, userId, userStore,
-        userResult) {
+async function _updateStoredDeviceKeysForUser(
+    _olmDevice, userId, userStore, userResult, localUserId, localDeviceId,
+) {
     let updated = false;
 
     // remove any devices in the store which aren't in the response
@@ -890,6 +898,13 @@ async function _updateStoredDeviceKeysForUser(_olmDevice, userId, userStore,
         }
 
         if (!(deviceId in userResult)) {
+            if (userId === localUserId && deviceId === localDeviceId) {
+                logger.warn(
+                    `Local device ${deviceId} missing from sync, skipping removal`,
+                );
+                continue;
+            }
+
             logger.log("Device " + userId + ":" + deviceId +
                 " has been removed");
             delete userStore[deviceId];

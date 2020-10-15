@@ -68,9 +68,7 @@ export function RoomState(roomId, oobMemberFlags = undefined) {
     this.members = {
         // userId: RoomMember
     };
-    this.events = {
-        // eventType: { stateKey: MatrixEvent }
-    };
+    this.events = new Map(); // Map<eventType, Map<stateKey, MatrixEvent>>
     this.paginationToken = null;
 
     this._sentinels = {
@@ -211,14 +209,14 @@ RoomState.prototype.getSentinelMember = function(userId) {
  * <code>undefined</code>, else a single event (or null if no match found).
  */
 RoomState.prototype.getStateEvents = function(eventType, stateKey) {
-    if (!this.events[eventType]) {
+    if (!this.events.has(eventType)) {
         // no match
         return stateKey === undefined ? [] : null;
     }
     if (stateKey === undefined) { // return all values
-        return utils.values(this.events[eventType]);
+        return Array.from(this.events.get(eventType).values());
     }
-    const event = this.events[eventType][stateKey];
+    const event = this.events.get(eventType).get(stateKey);
     return event ? event : null;
 };
 
@@ -238,9 +236,8 @@ RoomState.prototype.clone = function() {
     const status = this._oobMemberFlags.status;
     this._oobMemberFlags.status = OOB_STATUS_NOTSTARTED;
 
-    Object.values(this.events).forEach((eventsByStateKey) => {
-        const eventsForType = Object.values(eventsByStateKey);
-        copy.setStateEvents(eventsForType);
+    Array.from(this.events.values()).forEach((eventsByStateKey) => {
+        copy.setStateEvents(Array.from(eventsByStateKey.values()));
     });
 
     // Ugly hack: see above
@@ -276,8 +273,8 @@ RoomState.prototype.clone = function() {
  */
 RoomState.prototype.setUnknownStateEvents = function(events) {
     const unknownStateEvents = events.filter((event) => {
-        return this.events[event.getType()] === undefined ||
-            this.events[event.getType()][event.getStateKey()] === undefined;
+        return !this.events.has(event.getType()) ||
+            !this.events.get(event.getType()).has(event.getStateKey());
     });
 
     this.setStateEvents(unknownStateEvents);
@@ -306,6 +303,7 @@ RoomState.prototype.setStateEvents = function(stateEvents) {
             return;
         }
 
+        const lastStateEvent = self._getStateEventMatching(event);
         self._setStateEvent(event);
         if (event.getType() === "m.room.member") {
             _updateDisplayNameCache(
@@ -313,7 +311,7 @@ RoomState.prototype.setStateEvents = function(stateEvents) {
             );
             _updateThirdPartyTokenCache(self, event);
         }
-        self.emit("RoomState.events", event, self);
+        self.emit("RoomState.events", event, self, lastStateEvent);
     });
 
     // update higher level data structures. This needs to be done AFTER the
@@ -385,10 +383,15 @@ RoomState.prototype._getOrCreateMember = function(userId, event) {
 };
 
 RoomState.prototype._setStateEvent = function(event) {
-    if (this.events[event.getType()] === undefined) {
-        this.events[event.getType()] = {};
+    if (!this.events.has(event.getType())) {
+        this.events.set(event.getType(), new Map());
     }
-    this.events[event.getType()][event.getStateKey()] = event;
+    this.events.get(event.getType()).set(event.getStateKey(), event);
+};
+
+RoomState.prototype._getStateEventMatching = function(event) {
+    if (!this.events.has(event.getType())) return null;
+    return this.events.get(event.getType()).get(event.getStateKey());
 };
 
 RoomState.prototype._updateMember = function(member) {
@@ -670,7 +673,7 @@ RoomState.prototype._maySendEventOfType = function(eventType, userId, state) {
         const userPowerLevel = power_levels.users && power_levels.users[userId];
         if (Number.isFinite(userPowerLevel)) {
             powerLevel = userPowerLevel;
-        } else if(Number.isFinite(power_levels.users_default)) {
+        } else if (Number.isFinite(power_levels.users_default)) {
             powerLevel = power_levels.users_default;
         }
 
@@ -769,8 +772,12 @@ function _updateDisplayNameCache(roomState, userId, displayName) {
  * @param {MatrixEvent} event The matrix event which caused this event to fire.
  * @param {RoomState} state The room state whose RoomState.events dictionary
  * was updated.
+ * @param {MatrixEvent} prevEvent The event being replaced by the new state, if
+ * known. Note that this can differ from `getPrevContent()` on the new state event
+ * as this is the store's view of the last state, not the previous state provided
+ * by the server.
  * @example
- * matrixClient.on("RoomState.events", function(event, state){
+ * matrixClient.on("RoomState.events", function(event, state, prevEvent){
  *   var newStateEvent = event;
  * });
  */

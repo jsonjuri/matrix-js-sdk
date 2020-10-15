@@ -20,6 +20,9 @@ import anotherjson from 'another-json';
 import * as olmlib from "../../../src/crypto/olmlib";
 import {TestClient} from '../../TestClient';
 import {HttpResponse, setHttpResponses} from '../../test-utils';
+import { resetCrossSigningKeys } from "./crypto-utils";
+import { MatrixError } from '../../../src/http-api';
+import {logger} from '../../../src/logger';
 
 async function makeTestClient(userInfo, options, keys) {
     if (!keys) keys = {};
@@ -47,7 +50,7 @@ async function makeTestClient(userInfo, options, keys) {
 
 describe("Cross Signing", function() {
     if (!global.Olm) {
-        console.warn('Not running megolm backup unit tests: libolm not present');
+        logger.warn('Not running megolm backup unit tests: libolm not present');
         return;
     }
 
@@ -66,9 +69,64 @@ describe("Cross Signing", function() {
             );
         });
         alice.uploadKeySignatures = async () => {};
+        alice.setAccountData = async () => {};
+        alice.getAccountDataFromServer = async () => {};
         // set Alice's cross-signing key
-        await alice.resetCrossSigningKeys();
+        await alice.bootstrapCrossSigning({
+            authUploadDeviceSigningKeys: async func => await func({}),
+        });
         expect(alice.uploadDeviceSigningKeys).toHaveBeenCalled();
+    });
+
+    it("should abort bootstrap if device signing auth fails", async function() {
+        const alice = await makeTestClient(
+            {userId: "@alice:example.com", deviceId: "Osborne2"},
+        );
+        alice.uploadDeviceSigningKeys = async (auth, keys) => {
+            const errorResponse = {
+                session: "sessionId",
+                flows: [
+                    {
+                        stages: [
+                            "m.login.password",
+                        ],
+                    },
+                ],
+                params: {},
+            };
+
+            // If we're not just polling for flows, add on error rejecting the
+            // auth attempt.
+            if (auth) {
+                Object.assign(errorResponse, {
+                    completed: [],
+                    error: "Invalid password",
+                    errcode: "M_FORBIDDEN",
+                });
+            }
+
+            const error = new MatrixError(errorResponse);
+            error.httpStatus == 401;
+            throw error;
+        };
+        alice.uploadKeySignatures = async () => {};
+        alice.setAccountData = async () => {};
+        alice.getAccountDataFromServer = async () => { };
+        const authUploadDeviceSigningKeys = async func => await func({});
+
+        // Try bootstrap, expecting `authUploadDeviceSigningKeys` to pass
+        // through failure, stopping before actually applying changes.
+        let bootstrapDidThrow = false;
+        try {
+            await alice.bootstrapCrossSigning({
+                authUploadDeviceSigningKeys,
+            });
+        } catch (e) {
+            if (e.errcode === "M_FORBIDDEN") {
+                bootstrapDidThrow = true;
+            }
+        }
+        expect(bootstrapDidThrow).toBeTruthy();
     });
 
     it("should upload a signature when a user is verified", async function() {
@@ -78,7 +136,7 @@ describe("Cross Signing", function() {
         alice.uploadDeviceSigningKeys = async () => {};
         alice.uploadKeySignatures = async () => {};
         // set Alice's cross-signing key
-        await alice.resetCrossSigningKeys();
+        await resetCrossSigningKeys(alice);
         // Alice downloads Bob's device key
         alice._crypto._deviceList.storeCrossSigningForUser("@bob:example.com", {
             keys: {
@@ -273,7 +331,7 @@ describe("Cross Signing", function() {
         alice.uploadDeviceSigningKeys = async () => {};
         alice.uploadKeySignatures = async () => {};
         // set Alice's cross-signing key
-        await alice.resetCrossSigningKeys();
+        await resetCrossSigningKeys(alice);
         // Alice downloads Bob's ssk and device key
         const bobMasterSigning = new global.Olm.PkSigning();
         const bobMasterPrivkey = bobMasterSigning.generate_seed();
@@ -363,7 +421,7 @@ describe("Cross Signing", function() {
         alice.uploadKeySignatures = async () => {};
 
         // set Alice's cross-signing key
-        await alice.resetCrossSigningKeys();
+        await resetCrossSigningKeys(alice);
 
         const selfSigningKey = new Uint8Array([
             0x1e, 0xf4, 0x01, 0x6d, 0x4f, 0xa1, 0x73, 0x66,
@@ -520,7 +578,7 @@ describe("Cross Signing", function() {
         alice.uploadDeviceSigningKeys = async () => {};
         alice.uploadKeySignatures = async () => {};
         // set Alice's cross-signing key
-        await alice.resetCrossSigningKeys();
+        await resetCrossSigningKeys(alice);
         // Alice downloads Bob's ssk and device key
         // (NOTE: device key is not signed by ssk)
         const bobMasterSigning = new global.Olm.PkSigning();
@@ -588,7 +646,7 @@ describe("Cross Signing", function() {
         );
         alice.uploadDeviceSigningKeys = async () => {};
         alice.uploadKeySignatures = async () => {};
-        await alice.resetCrossSigningKeys();
+        await resetCrossSigningKeys(alice);
         // Alice downloads Bob's keys
         const bobMasterSigning = new global.Olm.PkSigning();
         const bobMasterPrivkey = bobMasterSigning.generate_seed();
@@ -740,7 +798,7 @@ describe("Cross Signing", function() {
         bob.uploadDeviceSigningKeys = async () => {};
         bob.uploadKeySignatures = async () => {};
         // set Bob's cross-signing key
-        await bob.resetCrossSigningKeys();
+        await resetCrossSigningKeys(bob);
         alice._crypto._deviceList.storeDevicesForUser("@bob:example.com", {
             Dynabook: {
                 algorithms: ["m.olm.curve25519-aes-sha256", "m.megolm.v1.aes-sha"],
@@ -766,7 +824,7 @@ describe("Cross Signing", function() {
         let upgradePromise = new Promise((resolve) => {
             upgradeResolveFunc = resolve;
         });
-        await alice.resetCrossSigningKeys();
+        await resetCrossSigningKeys(alice);
         await upgradePromise;
 
         const bobTrust = alice.checkUserTrust("@bob:example.com");

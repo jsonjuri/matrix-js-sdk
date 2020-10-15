@@ -20,7 +20,7 @@ limitations under the License.
  */
 
 import {EventEmitter} from "events";
-import {getHttpUriForMxc, getIdenticonUri} from "../content-repo";
+import {getHttpUriForMxc} from "../content-repo";
 import * as utils from "../utils";
 
 /**
@@ -274,10 +274,6 @@ RoomMember.prototype.getAvatarUrl =
     );
     if (httpUrl) {
         return httpUrl;
-    } else if (allowDefault) {
-        return getIdenticonUri(
-            baseUrl, this.userId, width, height,
-        );
     }
     return null;
 };
@@ -286,9 +282,9 @@ RoomMember.prototype.getAvatarUrl =
  * @return {string} the mxc avatar url
  */
 RoomMember.prototype.getMxcAvatarUrl = function() {
-    if(this.events.member) {
+    if (this.events.member) {
         return this.events.member.getDirectionalContent().avatar_url;
-    } else if(this.user) {
+    } else if (this.user) {
         return this.user.avatarUrl;
     }
     return null;

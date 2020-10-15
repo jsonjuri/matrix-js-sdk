@@ -87,7 +87,7 @@ export const MatrixEvent = function(
     // amount of needless string duplication. This can save moderate amounts of
     // memory (~10% on a 350MB heap).
     // 'membership' at the event level (rather than the content level) is a legacy
-    // field that Riot never otherwise looks at, but it will still take up a lot
+    // field that Element never otherwise looks at, but it will still take up a lot
     // of space if we don't intern it.
     ["state_key", "type", "sender", "room_id", "membership"].forEach((prop) => {
         if (!event[prop]) {
@@ -144,6 +144,10 @@ export const MatrixEvent = function(
      */
     this._forwardingCurve25519KeyChain = [];
 
+    /* where the decryption key is untrusted
+     */
+    this._untrusted = null;
+
     /* if we have a process decrypting this event, a Promise which resolves
      * when it is finished. Normally null.
      */
@@ -160,6 +164,19 @@ export const MatrixEvent = function(
      * so it can be easily accessed from the timeline.
      */
     this.verificationRequest = null;
+
+    /* The txnId with which this event was sent if it was during this session,
+       allows for a unique ID which does not change when the event comes back down sync.
+     */
+    this._txnId = null;
+
+    /* Set an approximate timestamp for the event relative the local clock.
+     * This will inherently be approximate because it doesn't take into account
+     * the time between the server putting the 'age' field on the event as it sent
+     * it to us and the time we're now constructing this event, but that's better
+     * than assuming the local clock is in sync with the origin HS's clock.
+     */
+    this._localTimestamp = Date.now() - this.getAge();
 };
 utils.inherits(MatrixEvent, EventEmitter);
 
@@ -315,11 +332,12 @@ utils.extend(MatrixEvent.prototype, {
 
     /**
      * Get the age of the event when this function was called.
-     * Relies on the local clock being in sync with the clock of the original homeserver.
+     * This is the 'age' field adjusted according to how long this client has
+     * had the event.
      * @return {Number} The age of this event in milliseconds.
      */
     getLocalAge: function() {
-        return Date.now() - this.getTs();
+        return Date.now() - this._localTimestamp;
     },
 
     /**
@@ -402,11 +420,12 @@ utils.extend(MatrixEvent.prototype, {
      * @internal
      *
      * @param {module:crypto} crypto crypto module
+     * @param {bool} isRetry True if this is a retry (enables more logging)
      *
      * @returns {Promise} promise which resolves (to undefined) when the decryption
      * attempt is completed.
      */
-    attemptDecryption: async function(crypto) {
+    attemptDecryption: async function(crypto, isRetry) {
         // start with a couple of sanity checks.
         if (!this.isEncrypted()) {
             throw new Error("Attempt to decrypt event which isn't encrypted");
@@ -418,7 +437,7 @@ utils.extend(MatrixEvent.prototype, {
         ) {
             // we may want to just ignore this? let's start with rejecting it.
             throw new Error(
-                "Attempt to decrypt event which has already been encrypted",
+                "Attempt to decrypt event which has already been decrypted",
             );
         }
 
@@ -436,7 +455,7 @@ utils.extend(MatrixEvent.prototype, {
             return this._decryptionPromise;
         }
 
-        this._decryptionPromise = this._decryptionLoop(crypto);
+        this._decryptionPromise = this._decryptionLoop(crypto, isRetry);
         return this._decryptionPromise;
     },
 
@@ -481,7 +500,7 @@ utils.extend(MatrixEvent.prototype, {
         return recipients;
     },
 
-    _decryptionLoop: async function(crypto) {
+    _decryptionLoop: async function(crypto, isRetry) {
         // make sure that this method never runs completely synchronously.
         // (doing so would mean that we would clear _decryptionPromise *before*
         // it is set in attemptDecryption - and hence end up with a stuck
@@ -498,13 +517,18 @@ utils.extend(MatrixEvent.prototype, {
                     res = this._badEncryptedMessage("Encryption not enabled");
                 } else {
                     res = await crypto.decryptEvent(this);
+                    if (isRetry) {
+                        logger.info(`Decrypted event on retry (id=${this.getId()})`);
+                    }
                 }
             } catch (e) {
                 if (e.name !== "DecryptionError") {
                     // not a decryption error: log the whole exception as an error
                     // (and don't bother with a retry)
+                    const re = isRetry ? 're' : '';
                     logger.error(
-                        `Error decrypting event (id=${this.getId()}): ${e.stack || e}`,
+                        `Error ${re}decrypting event ` +
+                        `(id=${this.getId()}): ${e.stack || e}`,
                     );
                     this._decryptionPromise = null;
                     this._retryDecryption = false;
@@ -605,6 +629,7 @@ utils.extend(MatrixEvent.prototype, {
             decryptionResult.claimedEd25519Key || null;
         this._forwardingCurve25519KeyChain =
             decryptionResult.forwardingCurve25519KeyChain || [];
+        this._untrusted = decryptionResult.untrusted || false;
     },
 
     /**
@@ -623,7 +648,7 @@ utils.extend(MatrixEvent.prototype, {
      * @return {boolean} True if this event is encrypted.
      */
     isEncrypted: function() {
-        return this.event.type === "m.room.encrypted";
+        return !this.isState() && this.event.type === "m.room.encrypted";
     },
 
     /**
@@ -693,6 +718,16 @@ utils.extend(MatrixEvent.prototype, {
      */
     getForwardingCurve25519KeyChain: function() {
         return this._forwardingCurve25519KeyChain;
+    },
+
+    /**
+     * Whether the decryption key was obtained from an untrusted source. If so,
+     * we cannot verify the authenticity of the message.
+     *
+     * @return {boolean}
+     */
+    isKeySourceUntrusted: function() {
+        return this._untrusted;
     },
 
     getUnsigned: function() {
@@ -891,6 +926,8 @@ utils.extend(MatrixEvent.prototype, {
     /**
      * Set an event that replaces the content of this event, through an m.replace relation.
      *
+     * @fires module:models/event.MatrixEvent#"Event.replaced"
+     *
      * @param {MatrixEvent?} newEvent the event with the replacing content, if any.
      */
     makeReplaced(newEvent) {
@@ -1075,6 +1112,14 @@ utils.extend(MatrixEvent.prototype, {
 
     setVerificationRequest: function(request) {
         this.verificationRequest = request;
+    },
+
+    setTxnId(txnId) {
+        this._txnId = txnId;
+    },
+
+    getTxnId() {
+        return this._txnId;
     },
 });
 

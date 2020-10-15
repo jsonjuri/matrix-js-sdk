@@ -36,9 +36,15 @@ function checkPayloadLength(payloadString) {
         // Note that even if we manage to do the encryption, the message send may fail,
         // because by the time we've wrapped the ciphertext in the event object, it may
         // exceed 65K. But at least we won't just fail with "abort()" in that case.
-        throw new Error("Message too long (" + payloadString.length + " bytes). " +
+        const err = new Error("Message too long (" + payloadString.length + " bytes). " +
                         "The maximum for an encrypted message is " +
                         MAX_PLAINTEXT_LENGTH + " bytes.");
+        // TODO: [TypeScript] We should have our own error types
+        err.data = {
+            errcode: "M_TOO_LARGE",
+            error: "Payload too large for encrypted message",
+        };
+        throw err;
     }
 }
 
@@ -138,7 +144,7 @@ OlmDevice.prototype.init = async function(opts = {}) {
     try {
         if (fromExportedDevice) {
             if (pickleKey) {
-                console.warn(
+                logger.warn(
                     'ignoring opts.pickleKey'
                     + ' because opts.fromExportedDevice is present.',
                 );
@@ -469,6 +475,36 @@ OlmDevice.prototype.generateOneTimeKeys = function(numKeys) {
             });
         },
     );
+};
+
+/**
+ * Generate a new fallback keys
+ *
+ * @return {Promise} Resolved once the account is saved back having generated the key
+ */
+OlmDevice.prototype.generateFallbackKey = async function() {
+    await this._cryptoStore.doTxn(
+        'readwrite', [IndexedDBCryptoStore.STORE_ACCOUNT],
+        (txn) => {
+            this._getAccount(txn, (account) => {
+                account.generate_fallback_key();
+                this._storeAccount(txn, account);
+            });
+        },
+    );
+};
+
+OlmDevice.prototype.getFallbackKey = async function() {
+    let result;
+    await this._cryptoStore.doTxn(
+        'readonly', [IndexedDBCryptoStore.STORE_ACCOUNT],
+        (txn) => {
+            this._getAccount(txn, (account) => {
+                result = JSON.parse(account.fallback_key());
+            });
+        },
+    );
+    return result;
 };
 
 /**
@@ -986,11 +1022,12 @@ OlmDevice.prototype._getInboundGroupSession = function(
  * @param {Object<string, string>} keysClaimed Other keys the sender claims.
  * @param {boolean} exportFormat true if the megolm keys are in export format
  *    (ie, they lack an ed25519 signature)
+ * @param {Object} [extraSessionData={}] any other data to be include with the session
  */
 OlmDevice.prototype.addInboundGroupSession = async function(
     roomId, senderKey, forwardingCurve25519KeyChain,
     sessionId, sessionKey, keysClaimed,
-    exportFormat,
+    exportFormat, extraSessionData = {},
 ) {
     await this._cryptoStore.doTxn(
         'readwrite', [
@@ -1037,12 +1074,12 @@ OlmDevice.prototype.addInboundGroupSession = async function(
                             " with first index " + session.first_known_index(),
                         );
 
-                        const sessionData = {
+                        const sessionData = Object.assign({}, extraSessionData, {
                             room_id: roomId,
                             session: session.pickle(this._pickleKey),
                             keysClaimed: keysClaimed,
                             forwardingCurve25519KeyChain: forwardingCurve25519KeyChain,
-                        };
+                        });
 
                         this._cryptoStore.storeEndToEndInboundGroupSession(
                             senderKey, sessionId, sessionData, txn,
@@ -1218,6 +1255,7 @@ OlmDevice.prototype.decryptGroupMessage = async function(
                         forwardingCurve25519KeyChain: (
                             sessionData.forwardingCurve25519KeyChain || []
                         ),
+                        untrusted: sessionData.untrusted,
                     };
                 },
             );

@@ -16,6 +16,7 @@ limitations under the License.
 */
 
 import {escapeRegExp, globToRegexp, isNullOrUndefined} from "./utils";
+import {logger} from './logger';
 
 /**
  * @module pushprocessor
@@ -23,9 +24,8 @@ import {escapeRegExp, globToRegexp, isNullOrUndefined} from "./utils";
 
 const RULEKINDS_IN_ORDER = ['override', 'content', 'room', 'sender', 'underride'];
 
-// The default override rules to apply when calculating actions for an event. These
-// defaults apply under no other circumstances to avoid confusing the client with server
-// state. We do this for two reasons:
+// The default override rules to apply to the push rules that arrive from the server.
+// We do this for two reasons:
 //   1. Synapse is unlikely to send us the push rule in an incremental sync - see
 //      https://github.com/matrix-org/synapse/pull/4867#issuecomment-481446072 for
 //      more details.
@@ -85,12 +85,15 @@ export function PushProcessor(client) {
         // $glob: RegExp,
     };
 
-    const matchingRuleFromKindSet = (ev, kindset, device) => {
+    const matchingRuleFromKindSet = (ev, kindset) => {
         for (let ruleKindIndex = 0;
                 ruleKindIndex < RULEKINDS_IN_ORDER.length;
                 ++ruleKindIndex) {
             const kind = RULEKINDS_IN_ORDER[ruleKindIndex];
             const ruleset = kindset[kind];
+            if (!ruleset) {
+                continue;
+            }
 
             for (let ruleIndex = 0; ruleIndex < ruleset.length; ++ruleIndex) {
                 const rule = ruleset[ruleIndex];
@@ -98,7 +101,7 @@ export function PushProcessor(client) {
                     continue;
                 }
 
-                const rawrule = templateRuleToRaw(kind, rule, device);
+                const rawrule = templateRuleToRaw(kind, rule);
                 if (!rawrule) {
                     continue;
                 }
@@ -112,7 +115,7 @@ export function PushProcessor(client) {
         return null;
     };
 
-    const templateRuleToRaw = function(kind, tprule, device) {
+    const templateRuleToRaw = function(kind, tprule) {
         const rawrule = {
             'rule_id': tprule.rule_id,
             'actions': tprule.actions,
@@ -154,19 +157,12 @@ export function PushProcessor(client) {
                 });
                 break;
         }
-        if (device) {
-            rawrule.conditions.push({
-                'kind': 'device',
-                'profile_tag': device,
-            });
-        }
         return rawrule;
     };
 
     const eventFulfillsCondition = function(cond, ev) {
         const condition_functions = {
             "event_match": eventFulfillsEventMatchCondition,
-            "device": eventFulfillsDeviceCondition,
             "contains_display_name": eventFulfillsDisplayNameCondition,
             "room_member_count": eventFulfillsRoomMemberCountCondition,
             "sender_notification_permission": eventFulfillsSenderNotifPermCondition,
@@ -258,10 +254,6 @@ export function PushProcessor(client) {
         return content.body.search(pat) > -1;
     };
 
-    const eventFulfillsDeviceCondition = function(cond, ev) {
-        return false; // XXX: Allow a profile tag to be set for the web client instance
-    };
-
     const eventFulfillsEventMatchCondition = function(cond, ev) {
         if (!cond.key) {
             return false;
@@ -326,23 +318,13 @@ export function PushProcessor(client) {
     };
 
     const matchingRuleForEventWithRulesets = function(ev, rulesets) {
-        if (!rulesets || !rulesets.device) {
+        if (!rulesets) {
             return null;
         }
-        if (ev.getSender() == client.credentials.userId) {
+        if (ev.getSender() === client.credentials.userId) {
             return null;
         }
 
-        const allDevNames = Object.keys(rulesets.device);
-        for (let i = 0; i < allDevNames.length; ++i) {
-            const devname = allDevNames[i];
-            const devrules = rulesets.device[devname];
-
-            const matchingRule = matchingRuleFromKindSet(devrules, devname);
-            if (matchingRule) {
-                return matchingRule;
-            }
-        }
         return matchingRuleFromKindSet(ev, rulesets.global);
     };
 
@@ -364,33 +346,6 @@ export function PushProcessor(client) {
         return actionObj;
     };
 
-    const applyRuleDefaults = function(clientRuleset) {
-        // Deep clone the object before we mutate it
-        const ruleset = JSON.parse(JSON.stringify(clientRuleset));
-
-        if (!clientRuleset['global']) {
-            clientRuleset['global'] = {};
-        }
-        if (!clientRuleset['global']['override']) {
-            clientRuleset['global']['override'] = [];
-        }
-
-        // Apply default overrides
-        const globalOverrides = clientRuleset['global']['override'];
-        for (const override of DEFAULT_OVERRIDE_RULES) {
-            const existingRule = globalOverrides
-                .find((r) => r.rule_id === override.rule_id);
-
-            if (!existingRule) {
-                const ruleId = override.rule_id;
-                console.warn(`Adding default global override for ${ruleId}`);
-                globalOverrides.push(override);
-            }
-        }
-
-        return ruleset;
-    };
-
     this.ruleMatchesEvent = function(rule, ev) {
         let ret = true;
         for (let i = 0; i < rule.conditions.length; ++i) {
@@ -410,8 +365,7 @@ export function PushProcessor(client) {
      * @return {PushAction}
      */
     this.actionsForEvent = function(ev) {
-        const rules = applyRuleDefaults(client.pushRules);
-        return pushActionsForEventAndRulesets(ev, rules);
+        return pushActionsForEventAndRulesets(ev, client.pushRules);
     };
 
     /**
@@ -421,7 +375,7 @@ export function PushProcessor(client) {
      * @return {object} The push rule, or null if no such rule was found
      */
     this.getPushRuleById = function(ruleId) {
-        for (const scope of ['device', 'global']) {
+        for (const scope of ['global']) {
             if (client.pushRules[scope] === undefined) continue;
 
             for (const kind of RULEKINDS_IN_ORDER) {
@@ -476,18 +430,25 @@ PushProcessor.rewriteDefaultRules = function(incomingRules) {
     if (!newRules.global) newRules.global = {};
     if (!newRules.global.override) newRules.global.override = [];
 
-    // Fix default override rules
-    newRules.global.override = newRules.global.override.map(r => {
-        const defaultRule = DEFAULT_OVERRIDE_RULES.find(d => d.rule_id === r.rule_id);
-        if (!defaultRule) return r;
+    // Merge the client-level defaults with the ones from the server
+    const globalOverrides = newRules.global.override;
+    for (const override of DEFAULT_OVERRIDE_RULES) {
+        const existingRule = globalOverrides
+            .find((r) => r.rule_id === override.rule_id);
 
-        // Copy over the actions, default, and conditions. Don't touch the user's
-        // preference.
-        r.default = defaultRule.default;
-        r.conditions = defaultRule.conditions;
-        r.actions = defaultRule.actions;
-        return r;
-    });
+        if (existingRule) {
+            // Copy over the actions, default, and conditions. Don't touch the user's
+            // preference.
+            existingRule.default = override.default;
+            existingRule.conditions = override.conditions;
+            existingRule.actions = override.actions;
+        } else {
+            // Add the rule
+            const ruleId = override.rule_id;
+            logger.warn(`Adding default global override for ${ruleId}`);
+            globalOverrides.push(override);
+        }
+    }
 
     return newRules;
 };
